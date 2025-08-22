@@ -1,0 +1,291 @@
+#!/bin/sh
+
+#Step1: FastQC of raw data
+
+for file in *.fastq.gz; do fastqc -o ../clarkii_skin_fastqc_raw_data/ $file; done
+
+#Step2: trimmomatic - Qual 25, minlength 40
+for R1 in *_1.fastq.gz; do R2=${R1/_1.fastq.gz}"_2.fastq.gz"; trimlog=${R1/_1.fastq.gz}"_trimlog.log"; summary=${R1/_1.fastq.gz}"_summary.txt"; r1paired=${R1/.fastq.gz}"_paired.fastq.gz"; r1unpaired=${R1/.fastq.gz}"_unpaired.fastq.gz"; r2paired=${R2/.fastq.gz}"_paired.fastq.gz"; r2unpaired=${R2/.fastq.gz}"_unpaired.fastq.gz"; java -jar ~/softwares/Trimmomatic-0.39/trimmomatic-0.39.jar PE -threads 32 -trimlog ~/anemone/trimmed_files/$trimlog -summary ~/anemone/trimmed_files/$summary $R1 $R2 ~/anemone/trimmed_files/$r1paired ~/anemone/trimmed_files/$r1unpaired ~/anemone/trimmed_files/$r2paired ~/anemone/trimmed_files/$r2unpaired ILLUMINACLIP:/home/Sneha/softwares/Trimmomatic-0.39/adapters/combined_adapters.fa:2:30:15:8:true SLIDINGWINDOW:4:25 MINLEN:40; done
+
+#Step3: remove over-represented seqs
+for R1 in *_1_paired.fastq.gz; do R2=${R1/_1_paired.fastq.gz}"_2_paired.fastq.gz"; trimlog=${R1/_1_paired.fastq.gz}"_trimlog.log"; summary=${R1/_1_paired.fastq.gz}"_summary.txt"; r1paired=${R1/.fastq.gz}"_paired.fastq.gz"; r1unpaired=${R1/.fastq.gz}"_unpaired.fastq.gz"; r2paired=${R2/.fastq.gz}"_paired.fastq.gz"; r2unpaired=${R2/.fastq.gz}"_unpaired.fastq.gz"; java -jar ~/softwares/Trimmomatic-0.39/trimmomatic-0.39.jar PE -threads 32 -trimlog ~/anemone/filter_over_rep_seqs/$trimlog -summary ~/anemone/filter_over_rep_seqs/$summary $R1 $R2 ~/anemone/filter_over_rep_seqs/$r1paired ~/anemone/filter_over_rep_seqs/$r1unpaired ~/anemone/filter_over_rep_seqs/$r2paired ~/anemone/filter_over_rep_seqs/$r2unpaired ILLUMINACLIP:/home/Sneha/anemone/filter_over_rep_seqs/Over_rep_seqs.fa:2:30:15:8:true SLIDINGWINDOW:4:25 MINLEN:40; done
+
+#Step4: Kraken
+
+kraken2-build --download-taxonomy --db ./ (download taxonomy)
+
+Download libraries for bacteria, fungi, virus
+
+kraken2-build --download-library bacteria --db ./
+kraken2-build --download-library fungi --db ./
+kraken2-build --download-library viral --db ./
+
+kraken2-build --threads 24 --build --db ./ (Build the database)
+
+#Classify reads 
+
+for R1 in *_1_paired.fastq.gz; do R2=${R1/1_paired.fastq.gz}"2_paired.fastq.gz";output=${R1/1_paired.fastq.gz}"output.txt";report=${R1/1_paired.fastq.gz}"report.txt";classified=${R1/1_paired.fastq.gz}"classified";unclassified=${R1/1_paired.fastq.gz}"unclassified"; kraken2 --db ../kraken_database/ --threads 24 --gzip-compressed --confidence 0.3 --output ../kraken_output/$output --report ../kraken_output/$report --paired --use-names --report-zero-counts --classified-out ../kraken_output/$classified#.fq --unclassified-out ../kraken_output/$unclassified#.fq $R1 $R2; bgzip ../kraken_output/*_unclassified_1.fq; bgzip ../kraken_output/*_unclassified_2.fq; bgzip ../kraken_output/*_classified_1.fq; bgzip ../kraken_output/*_classified_2.fq; done
+
+######### DRAP
+To run drap on docker first do:
+export SHARED_DIR=$PWD
+id -u $USER # to get my user ID # my user ID is 1002
+function docker_drap_cmd { echo "docker run --rm -e LOCAL_USER_ID=`id -u $USER` -u 1002:1002 -v $SHARED_DIR:$SHARED_DIR -w `pwd` sigenae/drap "; }
+
+## NOTE: With "export SHARED_DIR=$PWD" you make the PWD shared. So all commands have to be executed in the PWD. Doesn't work otherwise!
+
+#Step5: filter illumina
+
+#run filter_illumina to filter out reads with ambigious bases (N), extract longest subsequence without N. Also filter out too short reads after this (length <40)
+
+sudo `docker_drap_cmd` filter_illumina -i $R1 -i $R2 -o ../filter_illumina_output/$out1 -o ../filter_illumina_output/$out2 -q 1 -e -m 40
+#note for loop doen't work
+# unzip the fastq files before running filter illumina. filter illumina doesn't work on compressed files
+
+#Step 6: run DRAP to make the initial de novo assembly - pooled assembly stratergy
+
+First run DRAP asking it to only do step 1 (the pre-process step) where it normalises the fastq files, then merges them, then again normalises the merged files. Then use the merged, normalised files to run DRAP again (so now I only give it two fastq files (one with forward reads and one with reverse reads)) but this time with the --no-norm option so that it doesn't do normalization again.
+
+## (a) pooled assembly quit after step 1 - DRAP output within the filter_illumina output folder.
+
+sudo `docker_drap_cmd` runDrap -o ./DRAP_pooled_asm -1 NFA1RNA_filter_illumina_out_1.fq.gz,NFA2RNA_filter_illumina_out_1.fq.gz,NFA4RNA_filter_illumina_out_1.fq.gz,NFA5R  NA_filter_illumina_out_1.fq.gz,F5TRNA_filter_illumina_out_1.fq.gz,F6TRNA_filter_illumina_out_1.fq.gz,F7TRNA_filter_illumina_out_1.fq.gz,F8TRNA_filter_illumina_out_1.fq.gz -2 NFA1RNA_filter_illumina_out_2.fq.gz,NFA2RNA_filter_illumina_out_2.fq.gz,NFA4RNA_filter_illumina_out_2.fq.gz,NFA5RNA_filter_illumina_out_2.fq.gz,F5TRNA_filter_illumina_out_2.fq.gz,F6TRNA_filter_illumina_out_2.fq.gz,F7TRNA_filter_illumina_out_2.fq.gz,F8TRNA_filter_illumina_out_2.fq.gz -c '-x' -d trinity --no-trim --norm-src trinity -m bwa --no-rate --dbg-mem 128 --norm-mem 128 -q 1 
+
+# This gives the merged, normalised fastq files: merge_R1.norm.fq.gz and merge_R2.norm.fq.gz
+
+## (b) Use the merged and normalised fastq files to proceed with runDrap (use --no-norm instead of --norm-src trinity so that normalisation is not done again)
+
+sudo `docker_drap_cmd` runDrap -o ./DRAP_pooled_asm_step2 -1 merge_R1.norm.fq.gz -2 merge_R2.norm.fq.gz -c '-x' -d trinity --no-trim --no-norm -m bwa --no-rate --dbg-mem 128 --norm-mem 128 --write
+
+sudo `docker_drap_cmd` runDrap -o ./DRAP_pooled_asm_step2 -1 merge_R1.norm.fq.gz -2 merge_R2.norm.fq.gz -c '-x' -d trinity --no-trim --no-norm -m bwa --no-rate --dbg-mem 128 --norm-mem 128 --run
+
+# take the asm after the rmbt editing step: all_contigs.second_pass.fa: has 463,812 contigs
+
+#********************************************************** 6 July
+#After DRAP; all_contigs_second_pass has 463,812 contigs and all_transcripts_fpkm>1 has 241,479 contigs
+
+# Run BUSCO v4.1.3 on both assemblies (on my desktop)
+busco -i all_contigs.second_pass.fa -c 20 -o all_contigs.second_pass_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+busco -i transcripts_fpkm_1.fa -c 20 -o transcripts_fpkm_1_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+# make the busco plot from busco short summary output
+python3 ~/Documents/softwares/busco/scripts/generate_plot.py -wd ./ #It will produce a R script that you can run on your laptop
+
+
+# Count %GC for each contig
+~/anemone/softwares/seqkit fx2tab -n -g -o seqkit_out.txt all_contigs.second_pass.fa # second_pass asm
+~/anemone/softwares/seqkit fx2tab -n -g -o seqkit_out_fpkm1.txt transcripts_fpkm_1.fa # transcripts_fpkm_1 asm
+
+################## Download genomes of Symbiodiniaceae from NCBI and SAGER database (in total 12 genomes; see my notebook for details). Blast the de novo assemblies against the genomes
+
+# Concatenate the individual fasta files into one (files in sonorlax: ~/anemone/blast_symbiodiniaceae)
+cat *.fna Fugacium_kawagutii_V3_genome_scaffold.fasta > symbiodiniaceae_DB.fasta
+
+#make blast database
+makeblastdb -in symbiodiniaceae_DB.fasta -parse_seqids -dbtype nucl
+
+# Run blastn
+blastn -query ~/anemone/filter_illumina_output/DRAP_pooled_asm/DRAP_pooled_asm_step2/e-rmbt_editing/all_contigs.second_pass.fa -db ~/anemone/blast_symbiodiniaceae/blast_Db/symbiodiniaceae_DB.fasta -evalue 1e-20 -num_threads 30 -outfmt 7 -max_hsps 1 > blast_symbiodiniaceae_output #all contigs second pass
+
+blastn -query ~/anemone/filter_illumina_output/DRAP_pooled_asm/DRAP_pooled_asm_step2/f-rmbt_filtering/transcripts_fpkm_1.fa -db ~/anemone/blast_symbiodiniaceae/blast_Db/symbiodiniaceae_DB.fasta -evalue 1e-20 -num_threads 30 -outfmt 7 -max_hsps 1 > blast_symbiodiniaceae_output_transcripts_fpkm1 #transcripts_fpkm1
+
+blastn -query ~/anemone/filter_illumina_output/DRAP_pooled_asm/DRAP_pooled_asm_step2/e-rmbt_editing/all_contigs.second_pass.fa -db ~/anemone/blast_symbiodiniaceae/blast_Db/symbiodiniaceae_DB.fasta -evalue 1e-20 -num_threads 30 -outfmt 6 -max_hsps 1 > blast_symbiodiniaceae_output_format6 #all contigs second pass
+
+# Count no of contigs that have blast hits to the Symbiodiniaceae DB
+cut -f1 blast_symbiodiniaceae_transcripts_fpkm1_output_format6 | sort | uniq -c | wc -l
+
+cut -f1 blast_symbiodiniaceae_second_pass_output_format6 | sort | uniq -c | wc -l
+
+# Separate contigs that blast to dinoflagellates into true anemone and true dinoflagellate sequences based on %GC in R (in my laptop)
+
+#Take the output files from R and edit them
+
+cut -f1 true_anemone_fpkm1.txt |sort | uniq -c > true_anemone_fpkm1_contigIDs.txt # will print each contig ID prefixed by the number of blast hits
+cut -f1 true_anemone_second_pass.txt |sort | uniq -c > true_anemone_second_pass_contigIDs.txt # will print each contig ID prefixed by the number of blast hits
+cut -f1 true_dinoflagellate_second_pass.txt |sort | uniq -c > true_dinoflagellate_second_pass_contigIDs.txt # will print each contig ID prefixed by the number of blast hits
+cut -f1 true_dinoflagellate_fpkm1.txt |sort | uniq -c > true_dinoflagellate_fpkm1_contigIDs.txt # will print each contig ID prefixed by the number of blast hits
+
+
+cat true_anemone_fpkm1_contigIDs.txt | sed -e 's/^[ \t]*//' > true_anemone_fpkm1_contigIDs_edited.txt # remove white space from the beginning of the line
+cat true_anemone_second_pass_contigIDs.txt | sed -e 's/^[ \t]*//' > true_anemone_second_pass_contigIDs_edited.txt # remove white space from the beginning of the line
+cat true_dinoflagellate_fpkm1_contigIDs.txt | sed -e 's/^[ \t]*//' > true_dinoflagellate_fpkm1_contigIDs_edited.txt # remove white space from the beginning of the line
+cat true_dinoflagellate_second_pass_contigIDs.txt | sed -e 's/^[ \t]*//' > true_dinoflagellate_second_pass_contigIDs_edited.txt # remove white space from the beginning of the line
+
+
+cut -d" " -f2 true_dinoflagellate_second_pass_contigIDs_edited.txt | sed 's/^/>/' > true_dinoflagellate_second_pass_contigIDs_edited1.txt # add ">" symbol as a prefix to each line
+cut -d" " -f2 true_dinoflagellate_fpkm1_contigIDs_edited.txt | sed 's/^/>/' > true_dinoflagellate_fpkm1_contigIDs_edited1.txt # add ">" symbol as a prefix to each line
+cut -d" " -f2 true_anemone_fpkm1_contigIDs_edited.txt | sed 's/^/>/' > true_anemone_fpkm1_contigIDs_edited1.txt # add ">" symbol as a prefix to each line
+cut -d" " -f2 true_anemone_second_pass_contigIDs_edited.txt | sed 's/^/>/' > true_anemone_second_pass_contigIDs_edited1.txt # add ">" symbol as a prefix to each line
+
+# remove seqs that are true dinoflagellates from the second pass fasta file
+awk '(NR==FNR) { toRemove[$1]; next } /^>/ { p=1; for(h in toRemove) if ( h ~ $0) p=0 } p' true_dinoflagellate_second_pass_contigIDs_edited1.txt all_contigs.second_pass.fa > all_contigs.second_pass_removed_dinoflagellates.fa
+
+# remove seqs that are true dinoflagellates from the transcripts_fpkm1 fasta file
+awk '(NR==FNR) { toRemove[$1]; next } /^>/ { p=1; for(h in toRemove) if ( h ~ $0) p=0 } p' true_dinoflagellate_fpkm1_contigIDs_edited1.txt transcripts_fpkm_1.fa > transcripts_fpkm_1_removed_dinoflagellates.fa
+
+# Re-run BUSCO on fasta files after removing dinoflagellates
+busco -i transcripts_fpkm_1_removed_dinoflagellates.fa -c 20 -o transcripts_fpkm_1_removed_dinoflagellates_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+busco -i all_contigs.second_pass_removed_dinoflagellates.fa -c 20 -o all_contigs.second_pass_removed_dinoflagellates_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+# calculate %GC after removing dinoflagellates
+~/anemone/softwares/seqkit fx2tab -n -g -o seqkit_out_second_pass.txt all_contigs.second_pass_removed_dinoflagellates.fa # second_pass asm
+~/anemone/softwares/seqkit fx2tab -n -g -o seqkit_out_fpkm1.txt transcripts_fpkm_1_removed_dinoflagellates.fa # transcripts_fpkm_1 asm
+
+
+# map to reference after removing dinoflagellates
+
+#a: Create index for ref
+bowtie2-build --threads 30 -f ../all_contigs.second_pass_removed_dinoflagellates.fa second_pass_removed_dinoflagellate
+bowtie2-build --threads 30 -f ../transcripts_fpkm_1_removed_dinoflagellates.fa fpkm1_removed_dinoflagellate
+
+
+#b: mapping
+for R1 in *out_1.fq.gz;do R2=${R1/out_1.fq.gz}"out_2.fq.gz"; sam=${R1/filter_illumina_out_1.fq.gz}".sam"; bowtie2 -q -p 30 -a --sensitive --no-discordant --no-mixed -x ~/anemone/blast_symbiodiniaceae/blast_output/blast_results_filtered/map_to_filtered_ref/second_pass/second_pass_removed_dinoflagellate -1 $R1 -2 $R2 | samtools view -b > ~/anemone/blast_symbiodiniaceae/blast_output/blast_results_filtered/map_to_filtered_ref/second_pass/$sam; done
+
+for R1 in *out_1.fq.gz;do R2=${R1/out_1.fq.gz}"out_2.fq.gz"; sam=${R1/filter_illumina_out_1.fq.gz}".sam"; bowtie2 -q -p 30 -a --sensitive --no-discordant --no-mixed -x ~/anemone/blast_symbiodiniaceae/blast_output/blast_results_filtered/map_to_filtered_ref/fpkm1/fpkm1_removed_dinoflagellate -1 $R1 -2 $R2 | samtools view -b > ~/anemone/blast_symbiodiniaceae/blast_output/blast_results_filtered/map_to_filtered_ref/fpkm1/$sam; done
+
+#convert sam files to bam
+for file in *.sam; do out=${file/_.sam}".bam"; samtools view -S -b $file -o $out; done
+
+## (a) Transdecoder:
+
+# Step 1: TransDecoder.LongOrfs -t all_contigs.second_pass.fa # By default this will identify ORFs that are atlease 100 a.a long
+
+# Step 2: Blastp against swissprot database (use the longest_orfs.pep file from step 1 output.
+blastp -query ....transdecoder_dir/longest_orfs.pep -db /swissprot -evalue 1e-5 -outfmt 6 -max_target_seqs 1 -num_threads 30 > blastp_output_swissprot.outfmt6
+
+#Step 3: TransDecoder.Predict -t all_contigs.second_pass.fa --retain_blastp_hits blastp_output_swissprot.outfmt6 --single_best_only
+
+#Step 4: Get complete transcript seq for final selected contigs 
+awk 'BEGIN{FS="\t"}{if ($3 == "gene") print}' *.transdecoder.gff3 > ../final_assembly_after_transdecoder/*.transdecoder_genes.gff3  
+
+cut -f 1,4,5 *.transdecoder_genes.gff3 > *.transdecoder_genes.bed
+
+#bedtools v2.26.0
+bedtools getfasta -fi ~/anemone/blast_symbiodiniaceae/blast_output/blast_results_filtered/map_to_filtered_ref/transcripts_fpkm_1_removed_dinoflagellates.fa -bed *.transdecoder_genes.bed > <final_ref.fa> 
+
+# Run BUSCO v4.1.3 on both assemblies (on my desktop)
+busco -i ../second_pass_removed_dinoflagellates_transd.fa -c 20 -o second_pass_transd_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+busco -i ../fpkm1_removed_dinoflagellates_transd.fa -c 20 -o fpkm1_transd_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+
+################## mapping after transdecoder
+#a: Create index for ref
+bowtie2-build --threads 30 -f second_pass_removed_dinoflagellates_transd.fa secondpass_transd
+bowtie2-build --threads 30 -f fpkm1_removed_dinoflagellates_transd.fa fpkm1_transd
+
+
+#b: mapping -  keep second pass asm
+for R1 in *_1.fq.gz;do R2=${R1/_1.fq.gz}"_2.fq.gz"; sam=${R1/_filter_illumina_out_1.fq.gz}".sam"; met=${R1/_filter_illumina_out_1.fq.gz}"_metrics.txt"; err=${R1/_filter_illumina_out_1.fq.gz}"_stderr.txt"; (bowtie2 -q -p 30 --no-discordant --no-mixed --sensitive --dpad 0 --gbar 99999999 --mp 1,1 --np 1 --score-min L,0,-0.1 -x ~/anemone/mapping/secondpass/secondpass_transd --met-file ~/anemone/mapping/secondpass/$met -1 $R1 -2 $R2 -S ~/anemone/mapping/secondpass/$sam) 2>~/anemone/mapping/secondpass/$err ; done
+
+#convert sam files to bam
+for file in *.sam; do out=${file/_.sam}".bam"; samtools view -S -b $file -o $out; done
+
+#************************************************************************* Corset after transdecoder
+# map to transdecoder ref using -a parameter
+for R1 in *_1.fq.gz;do R2=${R1/_1.fq.gz}"_2.fq.gz"; sam=${R1/_filter_illumina_out_1.fq.gz}".sam"; met=${R1/_filter_illumina_out_1.fq.gz}"_metrics.txt"; err=${R1/_filter_illumina_out_1.fq.gz}"_stderr.txt"; (bowtie2 -a -q -p 10 --no-discordant --no-mixed --sensitive -x ~/anemone/mapping/secondpass/secondpass_transd --met-file ~/anemone/transdecoder/secondpass/corset/mapping_for_corset/$met -1 $R1 -2 $R2 -S ~/anemone/transdecoder/secondpass/corset/mapping_for_corset/$sam) 2>~/anemone/transdecoder/secondpass/corset/mapping_for_corset/$err ; done
+
+#convert sam files to bam
+for file in *.sam; do out=${file/.sam}".bam"; samtools view -S -b $file -o $out; done
+
+
+corset -m 0 -p final_asm_corset -g RNA,RNA,RNA,RNA,RNA,TRNA,TRNA,TRNA,TRNA,TRNA ~/anemone/mapping/secondpass/NFA1RNA.bam ~/anemone/mapping/secondpass/NFA2RNA.bam ~/anemone/mapping/secondpass/NFA3RNA.bam ~/anemone/mapping/secondpass/NFA4RNA.bam ~/anemone/mapping/secondpass/NFA5RNA.bam ~/anemone/mapping/secondpass/F5TRNA.bam ~/anemone/mapping/secondpass/F6TRNA.bam ~/anemone/mapping/secondpass/F7TRNA.bam ~/anemone/mapping/secondpass/F8TRNA.bam ~/anemone/mapping/secondpass/F9TRNA.bam
+
+#************************************************************************* get fasta seq for corset clusters (for denovo assembly)*****************************************************************#
+
+## Corset-tools Companion scripts for working with transcript clusters generated by Corset [https://github.com/Adamtaranto/Corset-tools]. 
+
+## Fetch Cluster Sequences Given a list of clusters of interest, a transcript fasta, and a Corset mapping file, fetchClusterSeqs.py will return a fasta file of transcripts belonging to those clusters (with cluster names appended).
+
+python ./Corset-tools-master/fetchClusterSeqs.py -i second_pass_removed_dinoflagellates_transd.fa -c final_asm_corset-clusters.txt -o second_pass_removed_dinoflagellates_transd_corset.fa -l # -l option retains only the longest transcript per cluster.  
+
+# five clusters/transcripts have no reads aligned and hence were removed 
+
+#TRINITY_DN97531_c0_g1_i1_1:1-311        NoReadsCluster-1
+#TRINITY_DN93616_c1_g1_i1_1:1-346        NoReadsCluster-2
+#TRINITY_DN75660_c0_g1_i1_1:1-322        NoReadsCluster-3
+#TRINITY_DN136815_c0_g1_i1_1:1-349       NoReadsCluster-4
+#TRINITY_DN66422_c0_g1_i1_1:1-299        NoReadsCluster-5
+
+The final fasta file after corset is: second_pass_removed_dinoflagellates_transd_corset.fa
+
+# Run BUSCO v4.1.3 on asm after corset (on my desktop)
+busco -i second_pass_removed_dinoflagellates_transd_corset.fa -c 20 -o second_pass_transd_corset_busco_out -m tran -l metazoa_odb10 --config ~/Documents/softwares/busco/config/config.ini
+
+########## Assembly stats : final file - second_pass_removed_dinoflagellates_transd_corset.fa
+#1. N50
+TrinityStats.pl  second_pass_removed_dinoflagellates_transd_corset.fa > N50.txt
+
+#2. rnaQUAST v2.1.0 (only runs on snorlax)
+python ~/softwares/rnaquast/rnaQUAST.py -c second_pass_removed_dinoflagellates_transd_corset.fa -o rnaquast_output/anemone -t 20
+
+#3. L50 (stats.sh script from BBMap - version 38.87)
+stats.sh in='second_pass_removed_dinoflagellates_transd_corset.fa' > bbmap_output.txt
+
+#4. find the shortest transcript length (can also get it from rnaquast output)
+
+## get the length of every contig in the fasta file 
+awk '/^>/ {printf("%s%s\t",(N>0?"\n":""),$0);N++;next;} {printf("%s",$0);} END {printf("\n");}' second_pass_removed_dinoflagellates_transd_corset.fa | awk -F '\t' '{printf("%d\t%s\n",length($2),$0);}' | sort -k1,1n |awk 'BEGIN {FS="\t"} {print $2 "_len" $1 "\t" $3}' | tr "\t" "\n" > output_final.fasta
+
+# use awk to linearize the fasta
+# second awk to insert a column with the length of the fasta file (the 1st  column is the length
+# sort on the first column (on the length)
+# print the 2nd column (header) and the 1st column (length) joined by underscore and then print the 3rd column (sequence)
+# convert back to fasta format
+
+## change the fasta header of the output_final.fasta file to have lenght as a second column in the header.
+awk 'BEGIN{FS = "_len"}{if(/^>/) {print $1 "\t" $2} else {print $0}}' output_final.fasta > output_length.fasta
+
+
+
+################## mapping after corset - bowtie2 version 2.5.1
+#a: Create index for ref
+~/Documents/softwares/bowtie2-2.5.1/bowtie2-build --threads 30 -f second_pass_removed_dinoflagellates_transd_corset.fa secondpass_transd_corset
+
+#b: mapping 
+for R1 in *_1.fq.gz;do R2=${R1/_1.fq.gz}"_2.fq.gz"; sam=${R1/_filter_illumina_out_1.fq.gz}".sam"; met=${R1/_filter_illumina_out_1.fq.gz}"_metrics.txt"; err=${R1/_filter_illumina_out_1.fq.gz}"_stderr.txt"; (~/Documents/softwares/bowtie2-2.5.1/bowtie2 -q -p 30 --no-discordant --no-mixed --sensitive --dpad 0 --gbar 99999999 --mp 1,1 --np 1 --score-min L,0,-0.1 -x /media/HDD/anemone/mapping_after_corset/secondpass_transd_corset --met-file /media/HDD/anemone/mapping_after_corset/$met -1 $R1 -2 $R2 -S /media/HDD/anemone/mapping_after_corset/$sam) 2>/media/HDD/anemone/mapping_after_corset/$err ; done
+
+#convert sam files to bam
+for file in *.sam; do out=${file/.sam}".bam"; samtools view -S -b $file -o $out; done
+
+
+#************************************************************************* Quantification - RSEM v1.3.1 (for denovo assembly)
+### run RSEM
+# RSEM currently cannot handle indel alignments, local alignments and discordant alignments. 
+# To make sure the bam files are valid for RSEM run >> rsem-sam-validator <bam_file>
+# If the file is not valid then run convert-sam-for-rsem to make the bam file compatible for RSEM
+
+# prepare reference - DONE
+rsem-prepare-reference -p 30 second_pass_removed_dinoflagellates_transd_corset.fa anemone_ref_transd_corset
+
+# calc. expression
+
+rsem-sam-validator <bam_file> # check if bam file is compatible for rsem
+
+convert-sam-for-rsem -p 20 <bam_file> <output_bam> # to make the bam file compatible for RSEM (remove discordant reads -- not needed as file is already valid)
+
+# for file in *_rsem.bam; do sample=${file/_rsem.bam}""; rsem-calculate-expression --paired-end -p 20 --alignments --no-bam-output $file <ref_name> $sample; done
+for file in /media/HDD/anemone/mapping_after_corset/*.bam; do sample=${file/.bam}""; rsem-calculate-expression --paired-end -p 20 --alignments --no-bam-output $file anemone_ref_transd_corset $sample; done
+
+#************************************************************* Annotation
+
+#Get uniref90 DB from Jade - downloaded on July 19, 2023.
+Index fasta file
+samtools faidx uniref90.fasta
+
+#make blast database
+makeblastdb -in ../uniref90.fasta -parse_seqids -dbtype prot -title UNIREF -out UNIREF -logfile uniref_DB.log
+
+#run blastx
+blastx -query second_pass_removed_dinoflagellates_transd_corset.fa -db uniref_DB/UNIREF -evalue 1e-5 -outfmt 14 -max_target_seqs 1 -out secondpass_transd_corset_blastoutput.xml -num_threads 20
+
+###### blast is taking too long, try blast with diamond v2.1.8
+
+wget https://github.com/bbuchfink/diamond/releases/download/v2.1.8/diamond-linux64.tar.gz
+tar xzf diamond-linux64.tar.gz
+
+./diamond makedb --in UNIREF.fasta -d uniref_DB #make database
+
+./diamond blastx -d ./uniref_DB -q second_pass_removed_dinoflagellates_transd_corset.fa -o blast_output_secondpass_transd_corset.xml -f 5 --max-target-seqs 1 -e 1e-5
+
